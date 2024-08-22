@@ -14,7 +14,7 @@ def worker_callback(ch, method, properties, body):
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
 # Setup for a specific worker
-worker_name = 'worker_1'  # This will differ for each worker
+worker_name = 'worker_2'  # This will differ for each worker
 connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
 channel = connection.channel()
 
