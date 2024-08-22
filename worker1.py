@@ -1,11 +1,21 @@
 import pika
+import json
+
+def count_words(content):
+    return len(content.split())
 
 def worker_callback(ch, method, properties, body):
     worker_name = method.routing_key
-    print(f" [x] {worker_name} received {body}")
+    message = json.loads(body)
+    chunk_name = message['chunk_name']
+    content = message['content']
+
+    print(f" [x] {worker_name} received chunk {chunk_name}")
+
+    # Count words in the chunk
+    word_count = count_words(content)
     
-    # Simulate processing and send a reply
-    reply_message = f"Reply from {worker_name}"
+    reply_message = json.dumps({'chunk_name': chunk_name, 'word_count': word_count})
     ch.basic_publish(exchange='task_exchange',
                      routing_key='master_reply',
                      body=reply_message)
@@ -14,7 +24,7 @@ def worker_callback(ch, method, properties, body):
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
 # Setup for a specific worker
-worker_name = 'worker_1'  # This will differ for each worker
+worker_name = 'worker_1'  # Change for each worker
 connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
 channel = connection.channel()
 
