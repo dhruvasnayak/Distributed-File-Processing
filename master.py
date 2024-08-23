@@ -32,7 +32,7 @@ def send_tasks(worker_routing_keys, file_chunks):
     for i, (key, chunk) in enumerate(file_chunks.items()):
         routing_key = worker_routing_keys[i % len(worker_routing_keys)]
         message = json.dumps({'chunk_name': key, 'content': chunk})
-        channel.basic_publish(exchange='task_exchange',
+        channel.basic_publish(exchange='file_processing_exchange',
                               routing_key=routing_key,
                               body=message)
         print(f" [x] Sent '{message}' to {routing_key}")
@@ -67,9 +67,14 @@ def sum_word_counts():
 # Setup RabbitMQ
 connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
 channel = connection.channel()
-channel.exchange_declare(exchange='task_exchange', exchange_type='direct')
+
+# Declare the exchange
+channel.exchange_declare(exchange='file_processing_exchange', exchange_type='direct')
+
+# Declare the reply queue
 channel.queue_declare(queue='master_reply_queue')
-channel.queue_bind(exchange='task_exchange', queue='master_reply_queue', routing_key='master_reply')
+channel.queue_bind(exchange='file_processing_exchange', queue='master_reply_queue', routing_key='master_reply')
+
 connection.close()
 
 # List of worker routing keys

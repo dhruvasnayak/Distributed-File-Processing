@@ -16,7 +16,7 @@ def worker_callback(ch, method, properties, body):
     word_count = count_words(content)
     
     reply_message = json.dumps({'chunk_name': chunk_name, 'word_count': word_count})
-    ch.basic_publish(exchange='task_exchange',
+    ch.basic_publish(exchange='file_processing_exchange',
                      routing_key='master_reply',
                      body=reply_message)
     print(f" [x] {worker_name} sent {reply_message}")
@@ -29,7 +29,7 @@ connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
 channel = connection.channel()
 
 channel.queue_declare(queue=f'{worker_name}_queue')
-channel.queue_bind(exchange='task_exchange', queue=f'{worker_name}_queue', routing_key=worker_name)
+channel.queue_bind(exchange='file_processing_exchange', queue=f'{worker_name}_queue', routing_key=worker_name)
 
 channel.basic_consume(queue=f'{worker_name}_queue', on_message_callback=worker_callback)
 
