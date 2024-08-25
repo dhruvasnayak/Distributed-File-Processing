@@ -1,54 +1,52 @@
 import pika
 import threading
-import os
-import math
 import json
+import pandas as pd
+from sklearn.ensemble import VotingClassifier, RandomForestClassifier
+from joblib import dump, load
+from sklearn.datasets import load_wine
+from sklearn.metrics import accuracy_score
 
-# Expected number of replies
 expected_replies = 2
 reply_count = 0
-received_word_counts = {}  # To store received word counts
+received_models = []
+model_accuracies = []
 
-def split_file(file_path):
-    try:
-        with open(file_path, 'r') as file:
-            file_content = file.read()
+def split_dataset(data):
+    """Split the dataset into chunks."""
+    chunk_size = len(data) // 2
+    chunks = [data[i:i + chunk_size] for i in range(0, len(data), chunk_size)]
+    return chunks
 
-        total_length = len(file_content)
-        chunk_size = math.ceil(total_length / 2)
-
-        chunks = [file_content[i:i + chunk_size] for i in range(0, total_length, chunk_size)]
-        base_name = os.path.basename(file_path).split('.')[0]
-        
-        return {f"{base_name}_{i+1}": chunk for i, chunk in enumerate(chunks)}
-
-    except Exception as e:
-        print(f"An error occurred: {e}")
-        return None
-
-def send_tasks(worker_routing_keys, file_chunks):
+def send_tasks(worker_routing_keys, data_chunks):
     connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
     channel = connection.channel()
-    for i, (key, chunk) in enumerate(file_chunks.items()):
+    for i, chunk in enumerate(data_chunks):
         routing_key = worker_routing_keys[i % len(worker_routing_keys)]
-        message = json.dumps({'chunk_name': key, 'content': chunk})
-        channel.basic_publish(exchange='file_processing_exchange',
+        chunk_json = chunk.to_json(orient='split')
+        message = json.dumps({'chunk_id': i + 1, 'data_chunk': chunk_json})
+        channel.basic_publish(exchange='model_training_exchange',
                               routing_key=routing_key,
                               body=message)
-        print(f" [x] Sent '{message}' to {routing_key}")
+        print(f" [x] Sent data chunk to {routing_key}")
     connection.close()
 
 def master_callback(ch, method, properties, body):
     global reply_count
-    global received_word_counts
+    global received_models
+    global model_accuracies
 
     reply_count += 1
     response = json.loads(body)
-    chunk_name = response['chunk_name']
-    word_count = response['word_count']
-    received_word_counts[chunk_name] = word_count
+    model_file = response['model_file']
+    accuracy = response['accuracy']
+    
+    # Load the received model
+    model = load(model_file)
+    received_models.append(model)
+    model_accuracies.append(accuracy)
 
-    print(f" [x] Master received {chunk_name} with word count {word_count} from {method.routing_key}")
+    print(f" [x] Master received model from {method.routing_key} with accuracy {accuracy}")
 
     if reply_count >= expected_replies:
         ch.stop_consuming()
@@ -57,35 +55,46 @@ def consume_replies():
     connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
     channel = connection.channel()
     channel.basic_consume(queue='master_reply_queue', on_message_callback=master_callback, auto_ack=True)
-    print(" [*] Master waiting for replies.")
+    print(" [*] Master waiting for model replies.")
     channel.start_consuming()
     connection.close()
 
-def sum_word_counts():
-    return sum(received_word_counts.values())
+def combine_models():
+    """Combine all received models into a VotingClassifier."""
+    voting_clf = VotingClassifier(estimators=[(f'model_{i}', model) for i, model in enumerate(received_models)],
+                                  voting='soft')
+    return voting_clf
+
+def evaluate_ensemble_model(ensemble_model, X_test, y_test):
+    """Evaluate the ensemble model."""
+    y_pred = ensemble_model.predict(X_test)
+    accuracy = accuracy_score(y_test, y_pred)
+    return accuracy
 
 # Setup RabbitMQ
 connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
 channel = connection.channel()
 
 # Declare the exchange
-channel.exchange_declare(exchange='file_processing_exchange', exchange_type='direct')
+channel.exchange_declare(exchange='model_training_exchange', exchange_type='direct')
 
 # Declare the reply queue
 channel.queue_declare(queue='master_reply_queue')
-channel.queue_bind(exchange='file_processing_exchange', queue='master_reply_queue', routing_key='master_reply')
+channel.queue_bind(exchange='model_training_exchange', queue='master_reply_queue', routing_key='master_reply')
 
 connection.close()
 
 # List of worker routing keys
 worker_routing_keys = ['worker_1', 'worker_2']
 
-# Read input file and get output type
-input_file = 'input.txt'  # Change to your input file
+# Load Wine dataset and split it
+wine = load_wine()
+df = pd.DataFrame(data=wine.data, columns=wine.feature_names)
+df['target'] = wine.target
+data_chunks = split_dataset(df)
 
-# Split the file and send tasks
-file_chunks = split_file(input_file)
-send_tasks(worker_routing_keys, file_chunks)
+# Send data chunks to workers
+send_tasks(worker_routing_keys, data_chunks)
 
 # Start a thread to consume replies
 consuming_thread = threading.Thread(target=consume_replies)
@@ -94,6 +103,24 @@ consuming_thread.start()
 # Wait for replies to be consumed
 consuming_thread.join()
 
-# Sum the word counts and print the total
-total_word_count = sum_word_counts()
-print(f"Total word count from all chunks: {total_word_count}")
+# Combine the models
+ensemble_model = combine_models()
+print(f"Ensemble model created with {len(received_models)} models.")
+
+# Fit the ensemble model on the same dataset used for training
+X_train = df.iloc[:, :-1]  # Features
+y_train = df.iloc[:, -1]   # Labels
+ensemble_model.fit(X_train, y_train)
+print("Ensemble model fitted.")
+
+# Save the ensemble model
+dump(ensemble_model, 'ensemble_model.pkl')
+print("Ensemble model saved as 'ensemble_model.pkl'.")
+
+# Evaluate each model and the ensemble model
+for i, accuracy in enumerate(model_accuracies):
+    print(f"Model {i+1} accuracy: {accuracy}")
+
+# Evaluate ensemble model
+ensemble_accuracy = evaluate_ensemble_model(ensemble_model, X_train, y_train)
+print(f"Ensemble model accuracy: {ensemble_accuracy}")
