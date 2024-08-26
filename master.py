@@ -1,10 +1,11 @@
+import os
 import pika
 import threading
 import json
 import pandas as pd
-from sklearn.ensemble import VotingClassifier, RandomForestClassifier
+from sklearn.ensemble import VotingClassifier
 from joblib import dump, load
-from sklearn.datasets import load_wine
+from sklearn.datasets import load_iris
 from sklearn.metrics import accuracy_score
 
 expected_replies = 2
@@ -40,7 +41,11 @@ def master_callback(ch, method, properties, body):
     response = json.loads(body)
     model_file = response['model_file']
     accuracy = response['accuracy']
-    
+
+    if not os.path.isfile(model_file):
+        print(f" [!] Model file {model_file} not found.")
+        return
+
     # Load the received model
     model = load(model_file)
     received_models.append(model)
@@ -87,10 +92,10 @@ connection.close()
 # List of worker routing keys
 worker_routing_keys = ['worker_1', 'worker_2']
 
-# Load Wine dataset and split it
-wine = load_wine()
-df = pd.DataFrame(data=wine.data, columns=wine.feature_names)
-df['target'] = wine.target
+# Load Iris dataset and split it
+iris = load_iris()
+df = pd.DataFrame(data=iris.data, columns=iris.feature_names)
+df['target'] = iris.target
 data_chunks = split_dataset(df)
 
 # Send data chunks to workers

@@ -1,14 +1,19 @@
 import pika
 import json
 import pandas as pd
-from sklearn.linear_model import LogisticRegression
+from sklearn.tree import DecisionTreeClassifier
 from joblib import dump
 from sklearn.metrics import accuracy_score
 from sklearn.preprocessing import StandardScaler
 import io
+import os
+
+# Directory to save model files
+MODEL_DIR = 'models'
+os.makedirs(MODEL_DIR, exist_ok=True)
 
 def train_model(data):
-    """Train a Logistic Regression model on the given data."""
+    """Train a Decision Tree model on the given data."""
     X = data.iloc[:, :-1]  # Features
     y = data.iloc[:, -1]   # Labels
     
@@ -16,10 +21,9 @@ def train_model(data):
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
     
-    model = LogisticRegression(max_iter=2000)  # Increased max_iter to ensure convergence
+    model = DecisionTreeClassifier()  # Use Decision Tree Classifier
     model.fit(X_scaled, y)
     return model, scaler
-
 
 def worker_callback(ch, method, properties, body):
     worker_name = method.routing_key
@@ -39,11 +43,15 @@ def worker_callback(ch, method, properties, body):
     # Train the model on the data chunk
     model, scaler = train_model(data_chunk)
     
+    if model is None:
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+        return
+    
     # Save the model and scaler to files
-    model_file = f'{worker_name}_model_{chunk_id}.pkl'
+    model_file = os.path.join(MODEL_DIR, f'{worker_name}_model_{chunk_id}.pkl')
     dump(model, model_file)
     
-    scaler_file = f'{worker_name}_scaler_{chunk_id}.pkl'
+    scaler_file = os.path.join(MODEL_DIR, f'{worker_name}_scaler_{chunk_id}.pkl')
     dump(scaler, scaler_file)
     
     # Evaluate the model on the same data
@@ -61,7 +69,6 @@ def worker_callback(ch, method, properties, body):
     print(f" [x] {worker_name} sent model file {model_file} with accuracy {accuracy}")
     
     ch.basic_ack(delivery_tag=method.delivery_tag)
-
 
 # Setup for a specific worker
 worker_name = 'worker_2'  # Change for each worker (e.g., 'worker_2')
