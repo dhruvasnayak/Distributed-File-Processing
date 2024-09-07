@@ -1,27 +1,43 @@
 import pika
 import json
 import pandas as pd
-from sklearn.linear_model import LogisticRegression
-from joblib import dump
+from joblib import dump, load
 from sklearn.metrics import accuracy_score
 import io
 import os
+import base64
 from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression
+from sklearn.neighbors import KNeighborsClassifier
+from io import BytesIO
 
 # Directory to save model files
 MODEL_DIR = 'models'
 os.makedirs(MODEL_DIR, exist_ok=True)
 
-def train_model(data):
-    """Train a Logistic Regression model on the given data."""
+def serialize_model(model):
+    """Serialize and base64 encode the model."""
+    buffer = BytesIO()
+    dump(model, buffer)
+    buffer.seek(0)
+    model_serialized = base64.b64encode(buffer.read()).decode('utf-8')
+    return model_serialized
+
+def deserialize_model(model_serialized):
+    """Deserialize a base64 encoded model."""
+    model_data = base64.b64decode(model_serialized)
+    model = load(io.BytesIO(model_data))
+    return model
+
+def train_model(model, data):
+    """Train the given model on the data."""
     X = data.iloc[:, :-1]  # Features
     y = data.iloc[:, -1]   # Labels
-    
+
     # Impute missing values
     imputer = SimpleImputer(strategy='mean')
     X_imputed = imputer.fit_transform(X)
     
-    model = LogisticRegression(random_state=1, max_iter=1000)
     model.fit(X_imputed, y)
     return model
 
@@ -29,45 +45,55 @@ def worker_callback(ch, method, properties, body):
     worker_name = method.routing_key
     message = json.loads(body)
     data_json = message.get('data', None)
+    model_serialized = message.get('model', None)
+    model_type = message.get('model_type', None)
     
-    if data_json is None:
-        print(f" [x] {worker_name} received message without data")
+    if data_json is None or model_serialized is None or model_type is None:
+        print(f" [x] {worker_name} received incomplete message")
         ch.basic_ack(delivery_tag=method.delivery_tag)
         return
     
     data = pd.read_json(io.StringIO(data_json), orient='split')
 
-    print(f" [x] {worker_name} received data")
+    print(f" [x] {worker_name} received data and model {model_type}")
 
-    # Train the model on the entire dataset
-    model = train_model(data)
-    
-    if model is None:
+    # Load the appropriate model
+    if model_type == 'logistic_regression':
+        model = LogisticRegression()
+    elif model_type == 'knn':
+        model = KNeighborsClassifier()
+    else:
+        print(f" [x] {worker_name} received unknown model type: {model_type}")
         ch.basic_ack(delivery_tag=method.delivery_tag)
         return
-    
-    # Save the model to a file
-    model_file = os.path.join(MODEL_DIR, f'{worker_name}_model.pkl')
-    dump(model, model_file)
-    
-    # Evaluate the model on the same data
+
+    # Deserialize the received model
+    model = deserialize_model(model_serialized)
+
+    # Train the model on the data
+    trained_model = train_model(model, data)
+
+    # Serialize the trained model for response
+    model_serialized_response = serialize_model(trained_model)
+
+    # Evaluate the model
     X = data.iloc[:, :-1]
     y = data.iloc[:, -1]
     X_imputed = SimpleImputer(strategy='mean').fit_transform(X)
-    y_pred = model.predict(X_imputed)
+    y_pred = trained_model.predict(X_imputed)
     accuracy = accuracy_score(y, y_pred)
     
-    # Send the model back to the master along with its accuracy
-    reply_message = json.dumps({'model_file': model_file, 'accuracy': accuracy})
+    # Send the serialized model and accuracy back to the master
+    reply_message = json.dumps({'model': model_serialized_response, 'accuracy': accuracy})
     ch.basic_publish(exchange='model_training_exchange',
                      routing_key='master_reply',
                      body=reply_message)
-    print(f" [x] {worker_name} sent model file {model_file} with accuracy {accuracy}")
+    print(f" [x] {worker_name} sent model with accuracy {accuracy}")
     
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
 # Setup for a specific worker
-worker_name = 'worker_1'  # Change for each worker (e.g., 'worker_2')
+worker_name = 'worker_1'  # Change for each worker (e.g., 'worker_1', 'worker_2')
 connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
 channel = connection.channel()
 
