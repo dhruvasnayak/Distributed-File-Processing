@@ -1,6 +1,4 @@
-import os
 import pika
-import threading
 import json
 import pandas as pd
 from joblib import dump, load
@@ -11,16 +9,30 @@ from sklearn.ensemble import VotingClassifier
 from sklearn.metrics import accuracy_score
 from sklearn.impute import SimpleImputer
 from io import BytesIO
+import threading
 
-# Global variables
 expected_replies = 2
 reply_count = 0
 received_models = []
 model_accuracies = []
 
-# Create a single connection to RabbitMQ
-connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
-channel = connection.channel()
+def create_connection():
+    """Establish a connection to RabbitMQ and return the connection and channel."""
+    connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
+    channel = connection.channel()
+    return connection, channel
+
+def close_connection(connection):
+    """Close the RabbitMQ connection."""
+    connection.close()
+
+def load_data(file_path):
+    """Load and preprocess data from a CSV file."""
+    data = pd.read_csv(file_path)
+    data = data[['sysBP', 'glucose', 'age', 'cigsPerDay', 'totChol', 'diaBP', 'prevalentHyp', 'male', 'BPMeds', 'diabetes', 'TenYearCHD']]
+    imputer = SimpleImputer(strategy='mean')
+    data_imputed = pd.DataFrame(imputer.fit_transform(data), columns=data.columns)
+    return data_imputed
 
 def deserialize_model(model_serialized):
     """Deserialize a model from a base64-encoded string."""
@@ -34,7 +46,7 @@ def serialize_model(model):
     buffer.seek(0)
     return base64.b64encode(buffer.read()).decode('utf-8')
 
-def send_task_to_worker(worker_routing_key, data, model):
+def send_task_to_worker(channel, worker_routing_key, data, model):
     """Send a task with data and model to a specified worker."""
     data_json = data.to_json(orient='split')
     model_serialized = serialize_model(model)
@@ -72,7 +84,7 @@ def master_callback(ch, method, properties, body):
     if reply_count >= expected_replies:
         ch.stop_consuming()
 
-def consume_replies():
+def consume_replies(channel):
     """Set up RabbitMQ consumer for model replies."""
     channel.basic_consume(queue='master_reply_queue', on_message_callback=master_callback, auto_ack=True)
     channel.start_consuming()
@@ -100,23 +112,24 @@ def perform_ensemble_learning():
     # Print final ensemble model accuracy
     print(f"\n[*] Ensemble Model Accuracy: {ensemble_accuracy}")
 
-data = pd.read_csv("framingham.csv")
-data = data[['sysBP', 'glucose', 'age', 'cigsPerDay', 'totChol', 'diaBP', 'prevalentHyp', 'male', 'BPMeds', 'diabetes', 'TenYearCHD']]
-imputer = SimpleImputer(strategy='mean')
-data_imputed = pd.DataFrame(imputer.fit_transform(data), columns=data.columns)
+# Main execution
+connection, channel = create_connection()
 
-logistic_regression_model = LogisticRegression(max_iter=1000)
-knn_model = KNeighborsClassifier()
+try:
+    data = load_data("framingham.csv")
 
-send_task_to_worker('worker_1', data_imputed, logistic_regression_model)
-send_task_to_worker('worker_2', data_imputed, knn_model)
+    logistic_regression_model = LogisticRegression(max_iter=1000)
+    knn_model = KNeighborsClassifier()
 
-consuming_thread = threading.Thread(target=consume_replies)
-consuming_thread.start()
-consuming_thread.join()
+    send_task_to_worker(channel, 'worker_1', data, logistic_regression_model)
+    send_task_to_worker(channel, 'worker_2', data, knn_model)
 
-if len(received_models) == expected_replies:
-    perform_ensemble_learning()
+    consuming_thread = threading.Thread(target=consume_replies, args=(channel,))
+    consuming_thread.start()
+    consuming_thread.join()
 
-# Close the connection
-connection.close()
+    if len(received_models) == expected_replies:
+        perform_ensemble_learning()
+finally:
+    # Ensure connection is closed even if an error occurs
+    close_connection(connection)
