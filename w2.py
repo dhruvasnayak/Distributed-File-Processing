@@ -4,20 +4,14 @@ import pandas as pd
 from joblib import dump, load
 from sklearn.metrics import accuracy_score
 import io
-import os
 import base64
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.neighbors import KNeighborsClassifier
-from io import BytesIO
-
-# Directory to save model files
-MODEL_DIR = 'models'
-os.makedirs(MODEL_DIR, exist_ok=True)
 
 def serialize_model(model):
     """Serialize and base64 encode the model."""
-    buffer = BytesIO()
+    buffer = io.BytesIO()
     dump(model, buffer)
     buffer.seek(0)
     model_serialized = base64.b64encode(buffer.read()).decode('utf-8')
@@ -91,7 +85,6 @@ def worker_callback(ch, method, properties, body):
     print(f" [x] {worker_name} sent model with accuracy {accuracy}")
     
     ch.basic_ack(delivery_tag=method.delivery_tag)
-
 
 # Setup for a specific worker
 worker_name = 'worker_2'  # Change for each worker (e.g., 'worker_1', 'worker_2')

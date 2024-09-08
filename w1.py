@@ -4,20 +4,14 @@ import pandas as pd
 from joblib import dump, load
 from sklearn.metrics import accuracy_score
 import io
-import os
 import base64
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.neighbors import KNeighborsClassifier
-from io import BytesIO
-
-# Directory to save model files
-MODEL_DIR = 'models'
-os.makedirs(MODEL_DIR, exist_ok=True)
 
 def serialize_model(model):
     """Serialize and base64 encode the model."""
-    buffer = BytesIO()
+    buffer = io.BytesIO()
     dump(model, buffer)
     buffer.seek(0)
     model_serialized = base64.b64encode(buffer.read()).decode('utf-8')
